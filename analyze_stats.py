@@ -1,259 +1,156 @@
-"""
-주석 제거 전후 파일 크기 통계 분석 + 처리 시간 측정
-"""
-from pathlib import Path
-from typing import Dict, List, Tuple
+import os
 import time
+from pathlib import Path
+from remove_swift_comments import SwiftCommentRemover
 
 
-def get_directory_size(directory: Path) -> int:
-    """디렉토리의 총 크기 (bytes) 계산"""
-    total = 0
-    for file in directory.rglob('*.swift'):
-        total += file.stat().st_size
-    return total
+def get_file_size(filepath):
+    """파일 크기를 바이트 단위로 반환"""
+    return os.path.getsize(filepath)
 
 
-def get_file_stats(directory: Path) -> List[Dict]:
-    """디렉토리 내 모든 Swift 파일의 통계"""
-    files = []
-    for file in sorted(directory.glob('*.swift')):
-        size = file.stat().st_size
-        with open(file, 'r', encoding='utf-8') as f:
-            content = f.read()
-            lines = content.count('\n')
-
-        files.append({
-            'name': file.name,
-            'size': size,
-            'lines': lines
-        })
-    return files
-
-
-def format_size(size_bytes: int) -> str:
+def format_size(bytes_size):
     """바이트를 읽기 좋은 형식으로 변환"""
     for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.2f} TB"
+        if bytes_size < 1024.0:
+            return f"{bytes_size:.2f} {unit}"
+        bytes_size /= 1024.0
+    return f"{bytes_size:.2f} TB"
 
 
-def format_time(seconds: float) -> str:
-    """초를 읽기 좋은 형식으로 변환"""
-    if seconds < 1:
-        return f"{seconds * 1000:.2f} ms"
-    elif seconds < 60:
-        return f"{seconds:.2f} 초"
-    else:
-        minutes = int(seconds // 60)
-        secs = seconds % 60
-        return f"{minutes}분 {secs:.2f}초"
+def analyze_project(project_path):
+    """단일 프로젝트 분석"""
+    project_name = os.path.basename(project_path)
+    swift_files = list(Path(project_path).rglob('*.swift'))
+
+    if not swift_files:
+        return None
+
+    print(f"\n{'=' * 70}")
+    print(f"프로젝트: {project_name}")
+    print(f"{'=' * 70}")
+    print(f"Swift 파일 개수: {len(swift_files)}개")
+
+    remover = SwiftCommentRemover()
+
+    total_original_size = 0
+    total_cleaned_size = 0
+    total_files = len(swift_files)
+
+    start_time = time.time()
+
+    for swift_file in swift_files:
+        try:
+            # 원본 파일 읽기
+            with open(swift_file, 'r', encoding='utf-8') as f:
+                original_content = f.read()
+
+            # 주석 제거
+            cleaned_content = remover.remove_comments(original_content)
+
+            # 크기 계산 (UTF-8 인코딩 기준)
+            original_size = len(original_content.encode('utf-8'))
+            cleaned_size = len(cleaned_content.encode('utf-8'))
+
+            total_original_size += original_size
+            total_cleaned_size += cleaned_size
+
+        except Exception as e:
+            print(f"  ⚠️  오류 ({swift_file.name}): {e}")
+            total_files -= 1
+
+    end_time = time.time()
+    processing_time = end_time - start_time
+
+    if total_files == 0:
+        print("처리 가능한 파일이 없습니다.")
+        return None
+
+    # 압축률 계산
+    compression_ratio = ((
+                                     total_original_size - total_cleaned_size) / total_original_size * 100) if total_original_size > 0 else 0
+
+    # 처리 속도 계산 (MB/s)
+    processing_speed = (total_original_size / (1024 * 1024)) / processing_time if processing_time > 0 else 0
+
+    # 결과 출력
+    print(f"\n처리 결과:")
+    print(f"  • 처리 시간: {processing_time:.3f}초")
+    print(f"  • 처리된 파일: {total_files}개")
+    print(f"  • 원본 크기: {format_size(total_original_size)}")
+    print(f"  • 처리 후 크기: {format_size(total_cleaned_size)}")
+    print(f"  • 절감 크기: {format_size(total_original_size - total_cleaned_size)}")
+    print(f"  • 압축률: {compression_ratio:.2f}%")
+    print(f"  • 처리 속도: {processing_speed:.2f} MB/s")
+
+    return {
+        'name': project_name,
+        'files': total_files,
+        'time': processing_time,
+        'original_size': total_original_size,
+        'cleaned_size': total_cleaned_size,
+        'compression_ratio': compression_ratio,
+        'speed': processing_speed
+    }
 
 
-def analyze_compression():
-    """압축률 분석 및 통계 출력"""
+def analyze_all_projects():
+    """./project 디렉토리의 모든 프로젝트 분석"""
+    project_dir = Path('./project')
 
-    # 전체 시작 시간
-    total_start_time = time.time()
-
-    input_root = Path('input')
-    output_root = Path('output')
-
-    if not input_root.exists() or not output_root.exists():
-        print("❌ 오류: input 또는 output 디렉토리가 없습니다.")
+    if not project_dir.exists():
+        print("❌ './project' 디렉토리를 찾을 수 없습니다.")
         return
 
-    # 프로젝트 목록
-    projects = [d.name for d in input_root.iterdir() if d.is_dir()]
+    # project 디렉토리 내의 모든 서브디렉토리 찾기
+    projects = [d for d in project_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
 
     if not projects:
-        print("❌ 오류: 프로젝트가 없습니다.")
+        print("❌ './project' 디렉토리에 프로젝트가 없습니다.")
         return
 
-    print("=" * 80)
-    print("주석 제거 전후 파일 크기 통계 분석")
-    print("=" * 80)
+    print("Swift 주석 제거 도구 - 프로젝트 분석")
+    print(f"총 {len(projects)}개의 프로젝트를 분석합니다...\n")
+
+    results = []
+
+    for project_path in sorted(projects):
+        result = analyze_project(project_path)
+        if result:
+            results.append(result)
 
     # 전체 통계
-    total_input_size = 0
-    total_output_size = 0
-    total_input_lines = 0
-    total_output_lines = 0
-    total_files = 0
+    if results:
+        print(f"\n{'=' * 70}")
+        print("전체 통계")
+        print(f"{'=' * 70}")
 
-    project_stats = []
+        total_files = sum(r['files'] for r in results)
+        total_time = sum(r['time'] for r in results)
+        total_original = sum(r['original_size'] for r in results)
+        total_cleaned = sum(r['cleaned_size'] for r in results)
+        avg_compression = sum(r['compression_ratio'] for r in results) / len(results)
+        overall_speed = (total_original / (1024 * 1024)) / total_time if total_time > 0 else 0
 
-    # 프로젝트별 분석 (시간 측정)
-    for project in projects:
-        project_start = time.time()
+        print(f"  • 분석된 프로젝트: {len(results)}개")
+        print(f"  • 총 파일 수: {total_files}개")
+        print(f"  • 총 처리 시간: {total_time:.3f}초")
+        print(f"  • 총 원본 크기: {format_size(total_original)}")
+        print(f"  • 총 처리 후 크기: {format_size(total_cleaned)}")
+        print(f"  • 총 절감 크기: {format_size(total_original - total_cleaned)}")
+        print(f"  • 평균 압축률: {avg_compression:.2f}%")
+        print(f"  • 전체 처리 속도: {overall_speed:.2f} MB/s")
 
-        input_dir = input_root / project
-        output_dir = output_root / project
-
-        if not output_dir.exists():
-            continue
-
-        input_files = get_file_stats(input_dir)
-        output_files = get_file_stats(output_dir)
-
-        # 파일명으로 매칭
-        input_dict = {f['name']: f for f in input_files}
-        output_dict = {f['name']: f for f in output_files}
-
-        project_input_size = sum(f['size'] for f in input_files)
-        project_output_size = sum(f['size'] for f in output_files)
-        project_input_lines = sum(f['lines'] for f in input_files)
-        project_output_lines = sum(f['lines'] for f in output_files)
-
-        project_time = time.time() - project_start
-
-        project_stats.append({
-            'name': project,
-            'files': len(input_files),
-            'input_size': project_input_size,
-            'output_size': project_output_size,
-            'input_lines': project_input_lines,
-            'output_lines': project_output_lines,
-            'time': project_time
-        })
-
-        total_input_size += project_input_size
-        total_output_size += project_output_size
-        total_input_lines += project_input_lines
-        total_output_lines += project_output_lines
-        total_files += len(input_files)
-
-    # 프로젝트별 통계 출력
-    print("\n📊 프로젝트별 통계")
-    print("-" * 80)
-
-    for stat in project_stats:
-        saved_size = stat['input_size'] - stat['output_size']
-        saved_lines = stat['input_lines'] - stat['output_lines']
-        reduction_rate = (saved_size / stat['input_size'] * 100) if stat['input_size'] > 0 else 0
-
-        print(f"\n프로젝트: {stat['name']}")
-        print(f"  파일 수: {stat['files']}개")
-        print(f"  원본 크기: {format_size(stat['input_size'])} ({stat['input_size']:,} bytes)")
-        print(f"  정리 후 크기: {format_size(stat['output_size'])} ({stat['output_size']:,} bytes)")
-        print(f"  절약된 크기: {format_size(saved_size)} ({saved_size:,} bytes)")
-        print(f"  압축률: {reduction_rate:.2f}%")
-        print(f"  원본 줄 수: {stat['input_lines']:,}줄")
-        print(f"  정리 후 줄 수: {stat['output_lines']:,}줄")
-        print(f"  제거된 줄: {saved_lines:,}줄")
-        print(f"  분석 시간: {format_time(stat['time'])}")
-
-    # 전체 통계 출력
-    total_saved_size = total_input_size - total_output_size
-    total_saved_lines = total_input_lines - total_output_lines
-    total_reduction_rate = (total_saved_size / total_input_size * 100) if total_input_size > 0 else 0
-
-    # 전체 소요 시간
-    total_time = time.time() - total_start_time
-
-    print("\n" + "=" * 80)
-    print("📈 전체 통계")
-    print("=" * 80)
-    print(f"\n총 프로젝트 수: {len(project_stats)}개")
-    print(f"총 파일 수: {total_files}개")
-    print(f"\n원본 총 크기: {format_size(total_input_size)} ({total_input_size:,} bytes)")
-    print(f"정리 후 총 크기: {format_size(total_output_size)} ({total_output_size:,} bytes)")
-    print(f"총 절약 크기: {format_size(total_saved_size)} ({total_saved_size:,} bytes)")
-    print(f"전체 압축률: {total_reduction_rate:.2f}%")
-    print(f"\n원본 총 줄 수: {total_input_lines:,}줄")
-    print(f"정리 후 총 줄 수: {total_output_lines:,}줄")
-    print(f"총 제거된 줄: {total_saved_lines:,}줄")
-
-    # 평균 통계
-    if len(project_stats) > 0:
-        avg_reduction = sum(
-            (s['input_size'] - s['output_size']) / s['input_size'] * 100
-            if s['input_size'] > 0 else 0
-            for s in project_stats
-        ) / len(project_stats)
-
-        print(f"\n평균 압축률: {avg_reduction:.2f}%")
-        print(f"프로젝트당 평균 절약: {format_size(total_saved_size // len(project_stats))}")
-        print(f"파일당 평균 절약: {format_size(total_saved_size // total_files)}")
-
-    # 처리 시간 통계
-    print("\n" + "=" * 80)
-    print("⏱️  처리 시간 통계")
-    print("=" * 80)
-    print(f"\n총 분석 시간: {format_time(total_time)}")
-
-    if total_files > 0:
-        time_per_file = total_time / total_files
-        print(f"파일당 평균 시간: {format_time(time_per_file)}")
-
-    if total_input_size > 0:
-        # KB당 처리 시간
-        kb_processed = total_input_size / 1024
-        time_per_kb = total_time / kb_processed
-
-        # MB당 처리 시간 추정
-        time_per_mb = time_per_kb * 1024
-
-        print(f"\n처리 속도:")
-        print(f"  - {format_size(total_input_size / total_time)}/초")
-        print(f"  - 1 KB 처리: {format_time(time_per_kb)}")
-        print(f"  - 1 MB 처리 예상: {format_time(time_per_mb)}")
-
-        # 다양한 크기별 예상 시간
-        print(f"\n예상 처리 시간:")
-        for size_mb in [1, 10, 50, 100, 500]:
-            estimated = time_per_mb * size_mb
-            print(f"  - {size_mb} MB: {format_time(estimated)}")
-
-    # 상세 파일별 통계 (상위 10개)
-    print("\n" + "=" * 80)
-    print("🔝 가장 많이 압축된 파일 TOP 10")
-    print("=" * 80)
-
-    all_file_stats = []
-    for project in projects:
-        input_dir = input_root / project
-        output_dir = output_root / project
-
-        if not output_dir.exists():
-            continue
-
-        input_files = get_file_stats(input_dir)
-        output_files = get_file_stats(output_dir)
-
-        input_dict = {f['name']: f for f in input_files}
-        output_dict = {f['name']: f for f in output_files}
-
-        for name in input_dict:
-            if name in output_dict:
-                input_f = input_dict[name]
-                output_f = output_dict[name]
-                saved = input_f['size'] - output_f['size']
-                reduction = (saved / input_f['size'] * 100) if input_f['size'] > 0 else 0
-
-                all_file_stats.append({
-                    'project': project,
-                    'name': name,
-                    'input_size': input_f['size'],
-                    'output_size': output_f['size'],
-                    'saved': saved,
-                    'reduction': reduction
-                })
-
-    # 절약 크기 기준 정렬
-    top_files = sorted(all_file_stats, key=lambda x: x['saved'], reverse=True)[:10]
-
-    for i, f in enumerate(top_files, 1):
-        print(f"\n{i}. {f['name']} ({f['project']})")
-        print(f"   원본: {format_size(f['input_size'])} → 정리 후: {format_size(f['output_size'])}")
-        print(f"   절약: {format_size(f['saved'])} ({f['reduction']:.1f}%)")
-
-    print("\n" + "=" * 80)
-    print(f"\n총 소요 시간: {format_time(total_time)}")
-    print("=" * 80)
+        # 프로젝트별 요약
+        print(f"\n{'=' * 70}")
+        print("프로젝트별 요약")
+        print(f"{'=' * 70}")
+        print(f"{'프로젝트명':<20} {'파일':<8} {'시간(초)':<10} {'압축률':<10} {'속도(MB/s)':<12}")
+        print(f"{'-' * 70}")
+        for r in results:
+            print(
+                f"{r['name']:<20} {r['files']:<8} {r['time']:<10.3f} {r['compression_ratio']:<9.2f}% {r['speed']:<12.2f}")
 
 
 if __name__ == '__main__':
-    analyze_compression()
+    analyze_all_projects()
