@@ -40,7 +40,6 @@ class SwiftCommentRemover:
         self.current_hash_count = 0
         self.current_quote_count = 0
 
-        # Depths for balanced pairs inside interpolation
         self.interpolation_depth = 0
         self.brace_depth = 0
         self.bracket_depth = 0
@@ -106,17 +105,14 @@ class SwiftCommentRemover:
         if pos < 0: return True
 
         char = self.source[pos]
-        # Common characters that can precede a regex literal.
         regex_preceding = {'=', '(', ',', '[', ':', '{', '!', '&', '|', '^', '+', '-', '*', '%', '<', '>', '~', ';'}
         if char in regex_preceding: return True
 
-        # Check for keywords like 'return' or 'where'
         for keyword in ['return', 'where']:
             keyword_len = len(keyword)
             if pos >= keyword_len - 1:
                 start = pos - keyword_len + 1
                 if self.source[start:pos + 1] == keyword:
-                    # Ensure it's not part of a larger word
                     if start == 0 or not self.source[start - 1].isalnum():
                         return True
         return False
@@ -128,7 +124,7 @@ class SwiftCommentRemover:
         return self.source[self.i]
 
     def _revert_to_previous_state(self):
-        """Reverts to the correct previous state (NORMAL or IN_INTERPOLATION) after a temporary state ends."""
+        """Reverts to the correct previous state after a temporary state ends."""
         self.current_hash_count = 0
         self.current_quote_count = 0
         if self.interpolation_depth > 0:
@@ -137,11 +133,11 @@ class SwiftCommentRemover:
             self.current_state = ParseState.NORMAL
 
     def _handle_normal_or_interpolation(self):
-        """Handles characters in NORMAL or IN_INTERPOLATION states by first checking for state transitions."""
+        """Handles characters in NORMAL or IN_INTERPOLATION states."""
         char = self._current_char()
         next_char = self._peek()
 
-        # --- Part 1: Check for transitions to other states (comments, strings, etc.) ---
+        # Check for state transitions
         if char == '/' and next_char == '/':
             self.current_state = ParseState.SINGLE_LINE_COMMENT
             self.i += 1
@@ -178,7 +174,7 @@ class SwiftCommentRemover:
             self._append(char)
             return
 
-        # --- Part 2: If no state change, append character and handle interpolation logic ---
+        # Append character and handle interpolation logic
         self._append(char)
 
         if self.current_state == ParseState.IN_INTERPOLATION:
@@ -190,17 +186,15 @@ class SwiftCommentRemover:
                 self.bracket_depth += 1
             elif char == ')':
                 self.interpolation_depth -= 1
+                if self.interpolation_depth == 0 and self.brace_depth == 0 and self.bracket_depth == 0:
+                    context = self.state_stack.pop()
+                    self.current_state = context.state
+                    self.current_hash_count = context.hash_count
+                    self.current_quote_count = context.quote_count
             elif char == '}':
                 self.brace_depth -= 1
             elif char == ']':
                 self.bracket_depth -= 1
-
-            # Check if the interpolation has ended
-            if self.interpolation_depth == 0 and self.brace_depth == 0 and self.bracket_depth == 0:
-                context = self.state_stack.pop()
-                self.current_state = context.state
-                self.current_hash_count = context.hash_count
-                self.current_quote_count = context.quote_count
 
     def _handle_normal(self):
         self._handle_normal_or_interpolation()
@@ -248,7 +242,11 @@ class SwiftCommentRemover:
             if next_char == '(':
                 self._append('\\(')
                 self.i += 1
-                context = StateContext(self.current_state, self.current_hash_count, self.current_quote_count)
+                context = StateContext(
+                    self.current_state,
+                    self.current_hash_count,
+                    self.current_quote_count
+                )
                 self.state_stack.append(context)
                 self.current_state = ParseState.IN_INTERPOLATION
                 self.interpolation_depth = 1
@@ -304,6 +302,8 @@ class SwiftCommentRemover:
 
     def _handle_extended_regex(self):
         char = self._current_char()
+
+        # Check for regex end first
         if char == '/':
             if self._count_char('#', 1) >= self.current_hash_count:
                 delimiters = '/' + '#' * self.current_hash_count
@@ -312,20 +312,36 @@ class SwiftCommentRemover:
                 self._revert_to_previous_state()
                 return
 
+        # Handle comment line (# ...)
         if char == '#':
-            # This is a comment. Skip until the newline, but don't consume the newline.
-            # The main loop will process the newline in the next iteration.
+            # Find start of comment (skip back over spaces)
+            result_len_before = len(self.result)
+            spaces_before = 0
+
+            # Count trailing spaces in result before #
+            while result_len_before > 0 and self.result[result_len_before - 1 - spaces_before] == ' ':
+                spaces_before += 1
+
+            # Remove trailing spaces
+            if spaces_before > 0:
+                self.result = self.result[:result_len_before - spaces_before]
+
+            # Skip comment content until newline (but don't consume it)
             while self.i < self.length and self.source[self.i] != '\n':
                 self.i += 1
-            if self.i < self.length:  # To handle file ending without newline
-                self.i -= 1  # Rewind so the main loop can process the \n
+
+            # Don't append newline here - let the main loop handle it
+            # Just rewind by 1 so the main loop processes the \n
+            self.i -= 1
             return
 
+        # Handle escape sequences
         if char == '\\' and self._peek():
             self._append(char + self._peek())
             self.i += 1
             return
 
+        # Regular character
         self._append(char)
 
     def process_file(self, input_path: str) -> str:
@@ -338,6 +354,20 @@ class SwiftCommentRemover:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(result)
         print(f"✓ 주석 제거 완료: {output_path}")
+
+    def process_directory(self, directory: str, output_dir: str = None, recursive: bool = True):
+        """디렉토리 내 모든 .swift 파일 처리"""
+        path = Path(directory)
+        pattern = '**/*.swift' if recursive else '*.swift'
+
+        for swift_file in path.glob(pattern):
+            if output_dir:
+                output_path = Path(output_dir) / swift_file.relative_to(path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                output_path = swift_file.with_suffix('.cleaned.swift')
+
+            self.process_and_save(str(swift_file), str(output_path))
 
 
 # --- Test Suite ---
@@ -367,9 +397,9 @@ let anotherRaw = ##"이 안에서는 /* 이것도 */ 주석이 아닙니다."##'
   [a-z]+  # 소문자 1개 이상
 /#''',
             '''let regex = #/
-  \\d+     
-  \\s+     
-  [a-z]+  
+  \\d+
+  \\s+
+  [a-z]+
 /#'''
         ),
         (
@@ -411,6 +441,11 @@ let arr = "values: \\(array.map { "item: \\($0)" /* 주석3 */ }.joined())"''',
             '''let nested = "outer \\(a + b  + c) middle \\("inner \\(x  + y)") end"
 let arr = "values: \\(array.map { "item: \\($0)"  }.joined())"'''
         ),
+        (
+            '문자열 보간 내 블록 주석',
+            '''let message = "User \\(user.username)'s new score is \\(user.score /* New score calculation */)."''',
+            '''let message = "User \\(user.username)'s new score is \\(user.score )."'''
+        ),
     ]
 
     remover = SwiftCommentRemover()
@@ -432,20 +467,18 @@ let arr = "values: \\(array.map { "item: \\($0)"  }.joined())"'''
             all_passed = False
             print("❌ 실패")
             print("\n[입력 코드]")
-            print(code)
+            print(repr(code))
             print("\n[기대 결과]")
-            print(expected)
+            print(repr(expected))
             print("\n[실제 결과]")
-            print(result)
-            print("-" * 20)
+            print(repr(result))
 
     print("\n" + "=" * 70)
     if all_passed:
         print("🎉 모든 테스트를 통과했습니다!")
     else:
-        print("🔥 일부 테스트에 실패했습니다.")
+        print("일부 테스트에 실패했습니다.")
 
 
 if __name__ == '__main__':
     run_tests()
-

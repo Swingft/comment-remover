@@ -28,6 +28,16 @@ def run_realistic_test():
         remover = SwiftCommentRemover()
         actual_cleaned_code = remover.remove_comments(source_code)
 
+        # 디버깅: 문제가 되는 라인만 출력
+        print("\n=== 디버깅: 문제 라인 확인 ===")
+        for i, line in enumerate(source_code.split('\n'), 1):
+            if 'New score calculation' in line:
+                print(f"원본 라인 {i}: {repr(line)}")
+
+        for i, line in enumerate(actual_cleaned_code.split('\n'), 1):
+            if 'New score' in line:
+                print(f"결과 라인 {i}: {repr(line)}")
+
         # 3. Compare and report
         if actual_cleaned_code.strip() == expected_cleaned_code.strip():
             print("✅ 성공: 주석이 제거된 코드가 기대 결과와 정확히 일치합니다.")
