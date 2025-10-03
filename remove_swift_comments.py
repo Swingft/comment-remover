@@ -44,6 +44,8 @@ class SwiftCommentRemover:
         self.brace_depth = 0
         self.bracket_depth = 0
 
+        self.line_had_content = False  # 현재 줄에 코드가 있었는지 추적
+
     def remove_comments(self, source: str) -> str:
         """Removes all comments from a Swift source code string."""
         self.source = source
@@ -58,6 +60,7 @@ class SwiftCommentRemover:
         self.interpolation_depth = 0
         self.brace_depth = 0
         self.bracket_depth = 0
+        self.line_had_content = False
 
         while self.i < self.length:
             self._process_current_char()
@@ -132,6 +135,26 @@ class SwiftCommentRemover:
         else:
             self.current_state = ParseState.NORMAL
 
+    def _remove_trailing_spaces(self):
+        """result 리스트의 끝에서 연속된 공백/탭을 제거합니다."""
+        while self.result and self.result[-1] in (' ', '\t'):
+            self.result.pop()
+
+    def _is_line_only_whitespace_before_comment(self):
+        """주석 시작 위치 이전까지 해당 줄에 공백만 있는지 원본 소스에서 확인"""
+        pos = self.i - 1
+        while pos >= 0:
+            ch = self.source[pos]
+            if ch == '\n':
+                # 줄의 시작까지 왔고 공백만 있었음
+                return True
+            if ch not in (' ', '\t'):
+                # 공백이 아닌 문자 발견
+                return False
+            pos -= 1
+        # 파일의 맨 처음부터 공백만 있었음
+        return True
+
     def _handle_normal_or_interpolation(self):
         """Handles characters in NORMAL or IN_INTERPOLATION states."""
         char = self._current_char()
@@ -139,10 +162,14 @@ class SwiftCommentRemover:
 
         # Check for state transitions
         if char == '/' and next_char == '/':
+            self._remove_trailing_spaces()
+            self.line_had_content = not self._is_line_only_whitespace_before_comment()
             self.current_state = ParseState.SINGLE_LINE_COMMENT
             self.i += 1
             return
         if char == '/' and next_char == '*':
+            self._remove_trailing_spaces()
+            self.line_had_content = not self._is_line_only_whitespace_before_comment()
             self.current_state = ParseState.MULTI_LINE_COMMENT
             self.nesting_level = 1
             self.i += 1
@@ -222,7 +249,9 @@ class SwiftCommentRemover:
     def _handle_single_comment(self):
         if self._current_char() == '\n':
             self._handle_comment_end()
-            self._append('\n')
+            # 주석만 있던 줄이면 개행문자를 추가하지 않음
+            if self.line_had_content:
+                self._append('\n')
 
     def _handle_multi_comment(self):
         char, next_char = self._current_char(), self._peek()
@@ -234,6 +263,9 @@ class SwiftCommentRemover:
             self.i += 1
             if self.nesting_level == 0:
                 self._handle_comment_end()
+                # 블록 주석 종료 후 바로 개행이 오고, 주석만 있던 줄이면 개행 건너뛰기
+                if self._peek() == '\n' and not self.line_had_content:
+                    self.i += 1
 
     def _handle_any_string(self, escape_state: ParseState):
         """Handles logic common to both single and multi-line strings."""
@@ -314,7 +346,6 @@ class SwiftCommentRemover:
 
         # Handle comment line (# ...)
         if char == '#':
-            # Find start of comment (skip back over spaces)
             result_len_before = len(self.result)
             spaces_before = 0
 
@@ -326,12 +357,10 @@ class SwiftCommentRemover:
             if spaces_before > 0:
                 self.result = self.result[:result_len_before - spaces_before]
 
-            # Skip comment content until newline (but don't consume it)
+            # Skip comment content until newline
             while self.i < self.length and self.source[self.i] != '\n':
                 self.i += 1
 
-            # Don't append newline here - let the main loop handle it
-            # Just rewind by 1 so the main loop processes the \n
             self.i -= 1
             return
 
@@ -379,8 +408,8 @@ def run_tests():
 let message = "Hello, \\(world.uppercased())" // 이 주석은 제거되어야 합니다.
 print(message) /* 이 주석도 제거되어야 합니다. */''',
             '''let world = "World"
-let message = "Hello, \\(world.uppercased())" 
-print(message) '''
+let message = "Hello, \\(world.uppercased())"
+print(message)'''
         ),
         (
             '원시 문자열',
@@ -414,15 +443,12 @@ let multiRaw = ##"다중 원시 /* 주석 아님 */ "##
 let regex = /\\d+/ // 정규식 뒤 주석
 /* /* 중첩 */ 주석 */
 let result = value''',
-            '''
-let value = 42 
-
+            '''let value = 42
 let str = "문자열 // 안의 주석"
-let interp = "값: \\(value  + 1)"
+let interp = "값: \\(value + 1)"
 let raw = #"원시: "test" // 주석 아님"#
 let multiRaw = ##"다중 원시 /* 주석 아님 */ "##
-let regex = /\\d+/ 
-
+let regex = /\\d+/
 let result = value'''
         ),
         (
@@ -430,7 +456,7 @@ let result = value'''
             '''let value = dictionary["key"] / 2 // 나누기 연산자입니다.
 let division = 10 / 5
 let regexVar = /\\d+/''',
-            '''let value = dictionary["key"] / 2 
+            '''let value = dictionary["key"] / 2
 let division = 10 / 5
 let regexVar = /\\d+/'''
         ),
@@ -438,13 +464,13 @@ let regexVar = /\\d+/'''
             '복잡한 문자열 보간',
             '''let nested = "outer \\(a + b /* 주석1 */ + c) middle \\("inner \\(x /* 주석2 */ + y)") end"
 let arr = "values: \\(array.map { "item: \\($0)" /* 주석3 */ }.joined())"''',
-            '''let nested = "outer \\(a + b  + c) middle \\("inner \\(x  + y)") end"
-let arr = "values: \\(array.map { "item: \\($0)"  }.joined())"'''
+            '''let nested = "outer \\(a + b + c) middle \\("inner \\(x + y)") end"
+let arr = "values: \\(array.map { "item: \\($0)" }.joined())"'''
         ),
         (
             '문자열 보간 내 블록 주석',
             '''let message = "User \\(user.username)'s new score is \\(user.score /* New score calculation */)."''',
-            '''let message = "User \\(user.username)'s new score is \\(user.score )."'''
+            '''let message = "User \\(user.username)'s new score is \\(user.score)."'''
         ),
     ]
 

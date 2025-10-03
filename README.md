@@ -319,7 +319,7 @@ python remove_swift_comments.py
 ### 통합 테스트 실행
 
 ```bash
-python test_runner.py
+python test_file.py
 ```
 
 실제 Swift 소스 파일(`realistic_source.swift`)을 처리하여 결과를 검증합니다.
